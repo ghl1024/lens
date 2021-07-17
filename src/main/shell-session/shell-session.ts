@@ -1,7 +1,29 @@
-import { Cluster } from "../cluster";
+/**
+ * Copyright (c) 2021 OpenLens Authors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+import fse from "fs-extra";
+import type { Cluster } from "../cluster";
 import { Kubectl } from "../kubectl";
-import * as WebSocket from "ws";
-import shellEnv from "shell-env";
+import type * as WebSocket from "ws";
+import { shellEnv } from "../utils/shell-env";
 import { app } from "electron";
 import { clearKubeconfigEnvVars } from "../utils/clear-kube-env-vars";
 import path from "path";
@@ -29,9 +51,7 @@ export abstract class ShellSession {
   protected kubectlBinDirP: Promise<string>;
   protected kubeconfigPathP: Promise<string>;
 
-  protected get cwd(): string | undefined {
-    return this.cluster.preferences?.terminalCWD;
-  }
+  protected abstract get cwd(): string | undefined;
 
   constructor(protected websocket: WebSocket, protected cluster: Cluster) {
     this.kubectl = new Kubectl(cluster.version);
@@ -39,10 +59,14 @@ export abstract class ShellSession {
     this.kubectlBinDirP = this.kubectl.binDir();
   }
 
-  open(shell: string, args: string[], env: Record<string, any>): void {
+  protected async open(shell: string, args: string[], env: Record<string, any>) {
+    const cwd = (this.cwd && await fse.pathExists(this.cwd))
+    	? this.cwd
+    	: env.HOME;
+
     this.shellProcess = pty.spawn(shell, args, {
       cols: 80,
-      cwd: this.cwd || env.HOME,
+      cwd,
       env,
       name: "xterm-256color",
       rows: 30,
@@ -119,7 +143,7 @@ export abstract class ShellSession {
   protected async getShellEnv() {
     const env = clearKubeconfigEnvVars(JSON.parse(JSON.stringify(await shellEnv())));
     const pathStr = [...this.getPathEntries(), await this.kubectlBinDirP, process.env.PATH].join(path.delimiter);
-    const shell = UserStore.getInstance().preferences.shell || process.env.SHELL || process.env.PTYSHELL;
+    const shell = UserStore.getInstance().resolvedShell;
 
     delete env.DEBUG; // don't pass DEBUG into shells
 
@@ -143,7 +167,7 @@ export abstract class ShellSession {
 
     if (path.basename(env.PTYSHELL) === "zsh") {
       env.OLD_ZDOTDIR = env.ZDOTDIR || env.HOME;
-      env.ZDOTDIR = this.kubectlBinDirP;
+      env.ZDOTDIR = await this.kubectlBinDirP;
       env.DISABLE_AUTO_UPDATE = "true";
     }
 
